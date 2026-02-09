@@ -1,5 +1,5 @@
 # --- build gogcli (gog) ---
-FROM golang:1.22-bookworm AS gog_builder
+FROM golang:1.25-bookworm AS gog_builder
 
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
