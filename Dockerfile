@@ -66,6 +66,8 @@ ENV XDG_CONFIG_HOME=/data/.config
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates \
+    python3 \
+    python3-pip \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -73,6 +75,10 @@ WORKDIR /app
 # Wrapper deps
 COPY package.json ./
 RUN npm install --omit=dev && npm cache clean --force
+
+# Python deps
+COPY requirements.txt ./
+RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 
 # Copy built openclaw
 COPY --from=openclaw-build /openclaw /openclaw
