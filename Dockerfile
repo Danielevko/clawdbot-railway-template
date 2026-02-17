@@ -9,7 +9,8 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
-RUN git clone --depth 1 https://github.com/steipete/gogcli.git
+# Pin to v0.9.0 to avoid build breakage from unstable main branch
+RUN git clone --depth 1 --branch v0.9.0 https://github.com/steipete/gogcli.git
 WORKDIR /src/gogcli
 RUN make
 
