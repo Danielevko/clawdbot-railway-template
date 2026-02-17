@@ -15,20 +15,17 @@ for (const suffix of ["PUBLIC_PORT", "STATE_DIR", "WORKSPACE_DIR", "GATEWAY_TOKE
   const newKey = `OPENCLAW_${suffix}`;
   if (process.env[oldKey] && !process.env[newKey]) {
     process.env[newKey] = process.env[oldKey];
-    console.warn(`[migration] Copied ${oldKey} → ${newKey}. Please rename this variable in your Railway settings.`);
+    // Best-effort compatibility shim for old Railway templates.
+    // Intentionally no warning: Railway templates can still set legacy keys and warnings are noisy.
   }
 }
 
-// Railway deployments sometimes inject PORT=3000 by default. We want the wrapper to
-// reliably listen on 8080 unless explicitly overridden.
+// Railway injects PORT at runtime and routes traffic to that port.
+// Do not force a different public port in the container image, or the service may
+// boot but the Railway domain will be routed to a different port.
 //
-// Prefer OPENCLAW_PUBLIC_PORT (set in the Dockerfile / template) over PORT.
-const PORT = Number.parseInt(
-  process.env.OPENCLAW_PUBLIC_PORT?.trim() ??
-    process.env.PORT ??
-    "8080",
-  10,
-);
+// OPENCLAW_PUBLIC_PORT is kept as an escape hatch for non-Railway deployments.
+const PORT = Number.parseInt(process.env.PORT ?? process.env.OPENCLAW_PUBLIC_PORT ?? "3000", 10);
 
 // State/workspace
 // OpenClaw defaults to ~/.openclaw.
@@ -442,10 +439,14 @@ app.get("/setup", requireSetupAuth, (_req, res) => {
     <h2>1) Model/auth provider</h2>
     <p class="muted">Matches the groups shown in the terminal onboarding.</p>
     <label>Provider group</label>
-    <select id="authGroup"></select>
+    <select id="authGroup">
+      <option>Loading providers…</option>
+    </select>
 
     <label>Auth method</label>
-    <select id="authChoice"></select>
+    <select id="authChoice">
+      <option>Loading methods…</option>
+    </select>
 
     <label>Key / Token (if required)</label>
     <input id="authSecret" type="password" placeholder="Paste API key / token if applicable" />
@@ -674,9 +675,10 @@ function runCmd(cmd, args, opts = {}) {
     proc.stdout?.on("data", (d) => (out += d.toString("utf8")));
     proc.stderr?.on("data", (d) => (out += d.toString("utf8")));
 
+    let killTimer;
     const timer = setTimeout(() => {
       try { proc.kill("SIGTERM"); } catch {}
-      setTimeout(() => {
+      killTimer = setTimeout(() => {
         try { proc.kill("SIGKILL"); } catch {}
       }, 2_000);
       out += `\n[timeout] Command exceeded ${timeoutMs}ms and was terminated.\n`;
@@ -685,12 +687,14 @@ function runCmd(cmd, args, opts = {}) {
 
     proc.on("error", (err) => {
       clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
       out += `\n[spawn error] ${String(err)}\n`;
       resolve({ code: 127, output: out });
     });
 
     proc.on("close", (code) => {
       clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
       resolve({ code: code ?? 0, output: out });
     });
   });
@@ -698,6 +702,11 @@ function runCmd(cmd, args, opts = {}) {
 
 app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
   try {
+    const safeWrite = (msg) => {
+      try {
+        if (!res.writableEnded) res.write(String(msg) + "\n");
+      } catch {}
+    };
     if (isConfigured()) {
       await ensureGatewayRunning();
       return res.json({ ok: true, output: "Already configured.\nUse Reset setup if you want to rerun onboarding.\n" });
@@ -715,6 +724,7 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
       return res.status(400).json({ ok: false, output: `Setup input error: ${String(err)}` });
     }
 
+    safeWrite("[setup] running openclaw onboard...");
     const onboard = await runCmd(OPENCLAW_NODE, clawArgs(onboardArgs));
 
   let extra = "";
@@ -1301,8 +1311,16 @@ const proxy = httpProxy.createProxyServer({
   xfwd: true,
 });
 
-proxy.on("error", (err, _req, _res) => {
+proxy.on("error", (err, _req, res) => {
   console.error("[proxy]", err);
+  try {
+    if (res && typeof res.writeHead === "function" && !res.headersSent) {
+      res.writeHead(502, { "Content-Type": "text/plain" });
+      res.end("Gateway unavailable\n");
+    }
+  } catch {
+    // ignore
+  }
 });
 
 app.use(async (req, res) => {
@@ -1383,5 +1401,13 @@ process.on("SIGTERM", () => {
   } catch {
     // ignore
   }
-  process.exit(0);
+
+  // Stop accepting new connections; allow in-flight requests to complete briefly.
+  try {
+    server.close(() => process.exit(0));
+  } catch {
+    process.exit(0);
+  }
+
+  setTimeout(() => process.exit(0), 5_000).unref?.();
 });
