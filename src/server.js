@@ -1323,6 +1323,31 @@ proxy.on("error", (err, _req, res) => {
   }
 });
 
+// Voice webhook proxy to port 3334 (voice-call plugin)
+const voiceProxy = httpProxy.createProxyServer({
+  target: "http://127.0.0.1:3334",
+  ws: false,
+  xfwd: true,
+});
+
+voiceProxy.on("error", (err, _req, res) => {
+  console.error("[voice-proxy]", err);
+  try {
+    if (res && typeof res.writeHead === "function" && !res.headersSent) {
+      res.writeHead(502, { "Content-Type": "text/plain" });
+      res.end("Voice webhook unavailable\n");
+    }
+  } catch {
+    // ignore
+  }
+});
+
+// Route voice webhook requests to the voice-call plugin server
+app.use("/voice", (req, res) => {
+  console.log("[voice-proxy] Routing", req.method, req.path, "to voice webhook server");
+  return voiceProxy.web(req, res, { target: "http://127.0.0.1:3334" });
+});
+
 app.use(async (req, res) => {
   // If not configured, force users to /setup for any non-setup routes.
   if (!isConfigured() && !req.path.startsWith("/setup")) {
