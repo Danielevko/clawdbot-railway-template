@@ -1343,8 +1343,10 @@ voiceProxy.on("error", (err, _req, res) => {
 });
 
 // Route voice webhook requests to the voice-call plugin server
-// Use app.all with wildcard to preserve the full path (including /voice prefix)
-app.all("/voice/*", (req, res) => {
+// Manually prepend /voice to preserve the full path when proxying
+app.use("/voice", (req, res) => {
+  // Express strips /voice from req.url, so we add it back
+  req.url = '/voice' + req.url;
   console.log("[voice-proxy] Routing", req.method, req.url, "to voice webhook server");
   return voiceProxy.web(req, res, { target: "http://127.0.0.1:3334" });
 });
