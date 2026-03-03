@@ -9,7 +9,8 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
-RUN git clone --depth 1 https://github.com/steipete/gogcli.git
+# Pin to v0.9.0 to avoid build breakage from unstable main branch
+RUN git clone --depth 1 --branch v0.9.0 https://github.com/steipete/gogcli.git
 WORKDIR /src/gogcli
 RUN make
 
@@ -67,12 +68,23 @@ ENV XDG_CONFIG_HOME=/data/.config
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates \
+    tini \
     python3 \
     python3-pip \
+    python3-venv \
   && rm -rf /var/lib/apt/lists/*
 
 # `openclaw update` expects pnpm. Provide it in the runtime image.
 RUN corepack enable && corepack prepare pnpm@10.23.0 --activate
+
+# Persist user-installed tools by default by targeting the Railway volume.
+# - npm global installs -> /data/npm
+# - pnpm global installs -> /data/pnpm (binaries) + /data/pnpm-store (store)
+ENV NPM_CONFIG_PREFIX=/data/npm
+ENV NPM_CONFIG_CACHE=/data/npm-cache
+ENV PNPM_HOME=/data/pnpm
+ENV PNPM_STORE_DIR=/data/pnpm-store
+ENV PATH="/data/npm/bin:/data/pnpm:${PATH}"
 
 WORKDIR /app
 
@@ -83,6 +95,10 @@ RUN npm install --omit=dev && npm cache clean --force
 # Python deps
 COPY requirements.txt ./
 RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
+
+# Patch jobspy: add Glassdoor support for Israel (upstream omits the 3rd tuple value)
+RUN sed -i 's/ISRAEL = ("israel", "il")/ISRAEL = ("israel", "il", "com")/' \
+    /usr/local/lib/python3.11/dist-packages/jobspy/model.py
 
 # Copy built openclaw
 COPY --from=openclaw-build /openclaw /openclaw
@@ -97,8 +113,12 @@ RUN printf '%s\n' '#!/usr/bin/env bash' 'exec node /openclaw/dist/entry.js "$@"'
 
 COPY src ./src
 
-# The wrapper listens on this port.
-ENV OPENCLAW_PUBLIC_PORT=8080
-ENV PORT=8080
+# The wrapper listens on $PORT.
+# IMPORTANT: Do not set a default PORT here.
+# Railway injects PORT at runtime and routes traffic to that port.
+# If we force a different port, deployments can come up but the domain will route elsewhere.
 EXPOSE 8080
+
+# Ensure PID 1 reaps zombies and forwards signals.
+ENTRYPOINT ["tini", "--"]
 CMD ["node", "src/server.js"]
