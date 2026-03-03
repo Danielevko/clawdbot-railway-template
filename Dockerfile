@@ -85,6 +85,10 @@ RUN npm install --omit=dev && npm cache clean --force
 COPY requirements.txt ./
 RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 
+# Patch jobspy: add Glassdoor support for Israel (upstream omits the 3rd tuple value)
+RUN sed -i 's/ISRAEL = ("israel", "il")/ISRAEL = ("israel", "il", "com")/' \
+    /usr/local/lib/python3.11/dist-packages/jobspy/model.py
+
 # Copy built openclaw
 COPY --from=openclaw-build /openclaw /openclaw
 
